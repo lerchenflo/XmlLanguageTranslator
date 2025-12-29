@@ -83,8 +83,46 @@ fun App() {
                 Spacer(Modifier.weight(1f))
                 
                 Button(onClick = {
-                    files.forEach { projectFile ->
-                        XmlUtils.saveXml(projectFile.file, projectFile.nodes)
+                    if (files.isNotEmpty()) {
+                        // 1. Capture the Master Structure (from File 0 / masterNodes)
+                        // Note: masterNodes is derived from files[0] + missing keys, and updateMasterNodes updates files[0].
+                        // So files[0].nodes is effectively our target structure.
+                        val masterStructure = files[0].nodes
+
+                        // 2. Propagate structure to all files
+                        val newFiles = files.mapIndexed { index, file ->
+                            if (index == 0) {
+                                file // File 0 is already the master
+                            } else {
+                                // Reconstruct nodes for this file based on masterStructure
+                                val newNodes = masterStructure.map { masterNode ->
+                                    when (masterNode) {
+                                        is XmlNode.StringEntry -> {
+                                            // Find existin value or missing
+                                            val existing = file.nodes.filterIsInstance<XmlNode.StringEntry>()
+                                                .find { it.name == masterNode.name }
+                                            
+                                            // Keep existing value, or use empty/master value if it was missing 
+                                            // (Assuming we want to add the key if it's missing in this file)
+                                            existing?.copy() ?: masterNode.copy(value = "")
+                                        }
+                                        // Copy comments/whitespace/other exactly to enforce structure sync
+                                        is XmlNode.Comment -> masterNode.copy()
+                                        is XmlNode.Whitespace -> masterNode.copy()
+                                        is XmlNode.Other -> masterNode.copy()
+                                    }
+                                }
+                                file.copy(nodes = newNodes)
+                            }
+                        }
+
+                        // 3. Update State
+                        files = newFiles
+
+                        // 4. Save to Disk
+                        newFiles.forEach { projectFile ->
+                            XmlUtils.saveXml(projectFile.file, projectFile.nodes)
+                        }
                     }
                 }) {
                     Icon(Icons.Default.Save, contentDescription = "Save All")
@@ -355,7 +393,7 @@ fun App() {
                         }
                         HorizontalDivider(modifier = Modifier.alpha(0.5f))
                     }
-                    
+
                 }
             }
         }
