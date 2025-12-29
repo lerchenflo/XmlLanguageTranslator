@@ -3,15 +3,18 @@ package org.lerchenflo.xmllanguagetranslator
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.FilterListOff
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,14 +32,32 @@ fun App() {
         var files by remember { mutableStateOf(listOf<ProjectFile>()) }
         var showOnlyEmpty by remember { mutableStateOf(false) }
 
-        // Compute all unique keys maintaining order (priority to first files)
-        val allKeys = remember(files) {
-            val keys = LinkedHashSet<String>()
-            files.forEach { file ->
-                // Filter extracting only StringEntry nodes
-                file.nodes.filterIsInstance<XmlNode.StringEntry>().forEach { keys.add(it.name) }
+        // Master Structure Logic
+        val masterNodes = remember(files) {
+            if (files.isEmpty()) emptyList<XmlNode>() else {
+                val master = files[0].nodes.toMutableList()
+                val existingKeys = master.filterIsInstance<XmlNode.StringEntry>().map { it.name }.toSet()
+                
+                // Find missing keys from other files
+                files.drop(1).forEach { file ->
+                    file.nodes.filterIsInstance<XmlNode.StringEntry>().forEach { entry ->
+                        if (entry.name !in existingKeys && master.none { it is XmlNode.StringEntry && it.name == entry.name }) {
+                            // Append missing key
+                            master.add(XmlNode.Whitespace("\n    "))
+                            master.add(entry)
+                        }
+                    }
+                }
+                master.toList()
             }
-            keys.toList()
+        }
+
+        fun updateMasterNodes(newNodes: List<XmlNode>) {
+             if (files.isNotEmpty()) {
+                 val newFiles = files.toMutableList()
+                 newFiles[0] = newFiles[0].copy(nodes = newNodes)
+                 files = newFiles.toList()
+             }
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
@@ -60,7 +81,7 @@ fun App() {
                 }
                 
                 Spacer(Modifier.weight(1f))
-
+                
                 Button(onClick = {
                     files.forEach { projectFile ->
                         XmlUtils.saveXml(projectFile.file, projectFile.nodes)
@@ -104,9 +125,12 @@ fun App() {
                         style = MaterialTheme.typography.titleMedium
                     )
 
-                    // Key Column Header
+                     // Reorder Header
+                    Spacer(Modifier.width(180.dp)) // Increased for Up/Down + Comment + Delete
+
+                    // Key/Type Column Header
                     Text(
-                        text = "Key / File",
+                        text = "Key / Type",
                         modifier = Modifier.width(200.dp),
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -124,7 +148,7 @@ fun App() {
                                 onValueChange = { newDesc ->
                                     val newFiles = files.toMutableList()
                                     newFiles[index] = file.copy(description = newDesc)
-                                    files = newFiles.toList() // Trigger recomposition
+                                    files = newFiles.toList()
                                 },
                                 label = { Text("Description") },
                                 singleLine = true,
@@ -137,33 +161,36 @@ fun App() {
                 HorizontalDivider()
 
                 // Data Rows
-                val filteredKeysSnapshot = remember(showOnlyEmpty) {
+                 val filteredNodesSnapshot = remember(showOnlyEmpty) {
                     if (showOnlyEmpty) {
-                        allKeys.filter { key ->
-                            files.any { file ->
-                                val entry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == key }
-                                val value = entry?.value
-                                value == null || value.isEmpty()
-                            }
+                         masterNodes.filter { node ->
+                             if (node is XmlNode.StringEntry) {
+                                  files.any { file ->
+                                    val entry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
+                                    val value = entry?.value
+                                    value == null || value.isEmpty()
+                                }
+                             } else {
+                                 false 
+                             }
                         }
                     } else {
                         emptyList()
                     }
                 }
-
-                val keysDisplay = if (showOnlyEmpty) filteredKeysSnapshot else allKeys
+                
+                val nodesDisplay = if (showOnlyEmpty) filteredNodesSnapshot else masterNodes.filter { it !is XmlNode.Whitespace }
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    itemsIndexed(keysDisplay) { index, key ->
-                        Row(
+                    itemsIndexed(nodesDisplay) { index, node ->
+                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(horizontalScrollState) // Syncing scrolling is difficult here without custom layout
+                                .horizontalScroll(horizontalScrollState)
                                 .padding(vertical = 4.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-
-                            // Index
+                             // Index
                             Text(
                                 text = "${index + 1}",
                                 modifier = Modifier.width(40.dp),
@@ -171,75 +198,164 @@ fun App() {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
 
-                            // Key Name
-                            Text(
-                                text = key,
-                                modifier = Modifier.width(200.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-
-                            // Values per file
-                            files.forEachIndexed { fileIndex, file ->
-                                Spacer(Modifier.width(8.dp))
-                                
-                                val existingEntry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == key }
-                                val value = existingEntry?.value ?: ""
-                                
-                                OutlinedTextField(
-                                    value = value,
-                                    onValueChange = { newValue ->
-                                        // Update logic
-                                        val newNodes = file.nodes.toMutableList()
-                                        // We need to find the specific index of the NODE
-                                        val nodeIndex = newNodes.indexOfFirst { it is XmlNode.StringEntry && it.name == key }
-                                        
-                                        if (nodeIndex != -1) {
-                                            // Update existing
-                                            // Preserve the entry but update value
-                                            val oldEntry = newNodes[nodeIndex] as XmlNode.StringEntry
-                                            newNodes[nodeIndex] = oldEntry.copy(value = newValue)
-                                        } else {
-                                            // Create new
-                                            // Add whitespace for indentation if possible (simple heuristic: 4 spaces)
-                                            // And newline before
+                            // Reorder & Action Buttons
+                            Row(modifier = Modifier.width(180.dp)) {
+                                IconButton(
+                                    onClick = {
+                                        val currentIdx = masterNodes.indexOf(node)
+                                        if (currentIdx > 0) {
+                                            // Scan backwards skipping whitespace
+                                            var targetIdx = currentIdx - 1
+                                            while (targetIdx >= 0 && masterNodes[targetIdx] is XmlNode.Whitespace) {
+                                                targetIdx--
+                                            }
                                             
-                                            // To make it look nice, we try to append before the last generic whitespace (usually closing tag indentation) 
-                                            // or just at end.
-                                            
-                                            // Simple append:
-                                            newNodes.add(XmlNode.Whitespace("\n    ")) // Indent
-                                            newNodes.add(XmlNode.StringEntry(key, newValue))
-                                            // We rely on the parser having a newline at end of file usually, or we add one step later?
-                                            // Ideally we find the last </resources> closing and insert before it?
-                                            // Our parser returns children of <resources>. So we just append to list.
-                                            // But we need a newline after the entry too probably?
-                                            // Let's just append Newline + Entry? 
-                                            // The list structure is: [Whitespace, Comment, Whitespace, String, Whitespace]
-                                            // If we append at end, it might be: [..., Whitespace(closing indent), String] which renders:
-                                            // ...
-                                            // </resources><string>...</string> -> Invalid if </resources> is implicit outside list.
-                                            // XmlUtils.saveXml constructs <resources> around the nodes. 
-                                            // So appending to list puts it inside <resources>.
-                                            // So [..., String] becomes <resources>...<string>...</string></resources>.
-                                            // We just strictly need proper indentation.
+                                            if (targetIdx >= 0) {
+                                                // We found a non-whitespace node to swap with
+                                                // BUT we need to potentially carry surrounding whitespace with us?
+                                                // For simplicity, let's just swap the Node objects in the list 
+                                                // and not worry about moving their indentation (as parser might have captured newline as separate whitespace)
+                                                // Swapping just the nodes is safer for visual reordering.
+                                                
+                                                val newNodes = masterNodes.toMutableList()
+                                                val prev = newNodes[targetIdx]
+                                                newNodes[targetIdx] = node
+                                                newNodes[currentIdx] = prev
+                                                updateMasterNodes(newNodes)
+                                            }
                                         }
-                                        
-                                        val newFiles = files.toMutableList()
-                                        newFiles[fileIndex] = file.copy(nodes = newNodes)
-                                        files = newFiles.toList()
                                     },
-                                    modifier = Modifier
-                                        .width(300.dp)
-                                        .background(
-                                            color = if (value.isEmpty()) androidx.compose.ui.graphics.Color.Yellow else androidx.compose.ui.graphics.Color.Transparent,
-                                        ),
-                                    placeholder = { Text("Empty") }
-                                )
+                                    enabled = !showOnlyEmpty
+                                ) { Icon(Icons.Default.ArrowUpward, "Up", modifier = Modifier.size(16.dp)) }
+                                
+                                IconButton(
+                                    onClick = {
+                                         val currentIdx = masterNodes.indexOf(node)
+                                        if (currentIdx != -1) {
+                                            // Scan users visible next, skipping whitespace
+                                            var targetIdx = currentIdx + 1
+                                            while (targetIdx < masterNodes.size && masterNodes[targetIdx] is XmlNode.Whitespace) {
+                                                targetIdx++
+                                            }
+                                            
+                                            if (targetIdx < masterNodes.size) {
+                                                val newNodes = masterNodes.toMutableList()
+                                                val next = newNodes[targetIdx]
+                                                newNodes[targetIdx] = node
+                                                newNodes[currentIdx] = next
+                                                updateMasterNodes(newNodes)
+                                            }
+                                        }
+                                    },
+                                    enabled = !showOnlyEmpty
+                                ) { Icon(Icons.Default.ArrowDownward, "Down", modifier = Modifier.size(16.dp)) }
+
+                                // Add Comment Above
+                                IconButton(
+                                    onClick = {
+                                        val currentIdx = masterNodes.indexOf(node)
+                                        if (currentIdx != -1) {
+                                            val newNodes = masterNodes.toMutableList()
+                                            // Insert before currentIdx
+                                            newNodes.add(currentIdx, XmlNode.Whitespace("\n    "))
+                                            newNodes.add(currentIdx + 1, XmlNode.Comment(""))
+                                            // We inserted 2 items, so remaining items shift effectively
+                                            updateMasterNodes(newNodes)
+                                        }
+                                    },
+                                    enabled = !showOnlyEmpty
+                                ) { Icon(Icons.Default.Comment, "Add Comment Above", modifier = Modifier.size(16.dp)) }
+                                
+                                // Delete Action
+                                IconButton(
+                                    onClick = {
+                                        val currentIdx = masterNodes.indexOf(node)
+                                        if (currentIdx != -1) {
+                                            val newNodes = masterNodes.toMutableList()
+                                            newNodes.removeAt(currentIdx)
+                                            updateMasterNodes(newNodes)
+                                        }
+                                    },
+                                    enabled = !showOnlyEmpty
+                                ) { Icon(Icons.Default.Delete, "Delete", modifier = Modifier.size(16.dp)) }
+                            }
+
+                            when (node) {
+                                is XmlNode.StringEntry -> {
+                                    // Key Name
+                                    Text(
+                                        text = node.name,
+                                        modifier = Modifier.width(200.dp),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    
+                                     // Values per file
+                                    files.forEachIndexed { fileIndex, file ->
+                                        Spacer(Modifier.width(8.dp))
+                                        
+                                        val existingEntry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
+                                        val value = existingEntry?.value ?: ""
+                                        
+                                        OutlinedTextField(
+                                            value = value,
+                                            onValueChange = { newValue ->
+                                                val newNodes = file.nodes.toMutableList()
+                                                val nodeIndex = newNodes.indexOfFirst { it is XmlNode.StringEntry && it.name == node.name }
+                                                
+                                                if (nodeIndex != -1) {
+                                                    val oldEntry = newNodes[nodeIndex] as XmlNode.StringEntry
+                                                    newNodes[nodeIndex] = oldEntry.copy(value = newValue)
+                                                } else {
+                                                    newNodes.add(XmlNode.Whitespace("\n    "))
+                                                    newNodes.add(XmlNode.StringEntry(node.name, newValue))
+                                                }
+                                                
+                                                val newFiles = files.toMutableList()
+                                                newFiles[fileIndex] = file.copy(nodes = newNodes)
+                                                files = newFiles.toList()
+                                            },
+                                            modifier = Modifier
+                                                .width(300.dp)
+                                                .background(
+                                                     color = if (value.isEmpty()) androidx.compose.ui.graphics.Color.Yellow else androidx.compose.ui.graphics.Color.Transparent,
+                                                ),
+                                            placeholder = { Text("Empty") }
+                                        )
+                                    }
+                                }
+                                is XmlNode.Comment -> {
+                                    // Comment Row
+                                    OutlinedTextField(
+                                        value = node.content,
+                                        onValueChange = { newContent ->
+                                            val currentIdx = masterNodes.indexOf(node)
+                                            if (currentIdx != -1) {
+                                                val newM = masterNodes.toMutableList()
+                                                newM[currentIdx] = node.copy(content = newContent)
+                                                updateMasterNodes(newM)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                                        label = { Text("Comment") },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = MaterialTheme.colorScheme.secondary,
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
+                                        )
+                                    )
+                                }
+                                else -> {
+                                     Text(
+                                        text = "[Unknown Node]",
+                                        modifier = Modifier.width(200.dp),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             }
                         }
                         HorizontalDivider(modifier = Modifier.alpha(0.5f))
                     }
+                    
                 }
             }
         }
