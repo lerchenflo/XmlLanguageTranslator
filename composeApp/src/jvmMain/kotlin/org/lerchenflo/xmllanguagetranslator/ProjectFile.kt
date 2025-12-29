@@ -5,5 +5,5 @@ import java.io.File
 data class ProjectFile(
     val file: File,
     val description: String = "",
-    val content: List<StringResource> = emptyList()
+    val nodes: List<XmlNode> = emptyList()
 )

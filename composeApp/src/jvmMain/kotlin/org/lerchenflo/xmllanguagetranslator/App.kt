@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Save
@@ -32,7 +33,8 @@ fun App() {
         val allKeys = remember(files) {
             val keys = LinkedHashSet<String>()
             files.forEach { file ->
-                file.content.forEach { keys.add(it.name) }
+                // Filter extracting only StringEntry nodes
+                file.nodes.filterIsInstance<XmlNode.StringEntry>().forEach { keys.add(it.name) }
             }
             keys.toList()
         }
@@ -48,7 +50,7 @@ fun App() {
                     if (file != null) {
                         files = files + ProjectFile(
                             file = file,
-                            content = XmlUtils.parseXml(file)
+                            nodes = XmlUtils.parseXml(file)
                         )
                     }
                 }) {
@@ -61,7 +63,7 @@ fun App() {
 
                 Button(onClick = {
                     files.forEach { projectFile ->
-                        XmlUtils.saveXml(projectFile.file, projectFile.content)
+                        XmlUtils.saveXml(projectFile.file, projectFile.nodes)
                     }
                 }) {
                     Icon(Icons.Default.Save, contentDescription = "Save All")
@@ -85,12 +87,6 @@ fun App() {
             HorizontalDivider()
 
             // Grid Content
-            // We use a Row with horizontal scroll for columns (Files)
-            // Inside, a Column or LazyColumn for rows (Keys)
-            // But actually, we want the KEYS to be rows.
-            // So: LazyColumn (Rows = Keys)
-            // Inside each Item: Row (Columns = Files)
-            
             val horizontalScrollState = rememberScrollState()
             
             Column(modifier = Modifier.fillMaxSize()) {
@@ -101,6 +97,13 @@ fun App() {
                         .horizontalScroll(horizontalScrollState)
                         .padding(8.dp)
                 ) {
+                    // Index Header
+                    Text(
+                        text = "#",
+                        modifier = Modifier.width(40.dp),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
                     // Key Column Header
                     Text(
                         text = "Key / File",
@@ -138,7 +141,8 @@ fun App() {
                     if (showOnlyEmpty) {
                         allKeys.filter { key ->
                             files.any { file ->
-                                val value = file.content.find { it.name == key }?.value
+                                val entry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == key }
+                                val value = entry?.value
                                 value == null || value.isEmpty()
                             }
                         }
@@ -150,14 +154,23 @@ fun App() {
                 val keysDisplay = if (showOnlyEmpty) filteredKeysSnapshot else allKeys
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(keysDisplay) { key ->
+                    itemsIndexed(keysDisplay) { index, key ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(horizontalScrollState) // Syncing scrolling is hard this way, but simple approach first
+                                .horizontalScroll(horizontalScrollState) // Syncing scrolling is difficult here without custom layout
                                 .padding(vertical = 4.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+
+                            // Index
+                            Text(
+                                text = "${index + 1}",
+                                modifier = Modifier.width(40.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
                             // Key Name
                             Text(
                                 text = key,
@@ -170,32 +183,50 @@ fun App() {
                             files.forEachIndexed { fileIndex, file ->
                                 Spacer(Modifier.width(8.dp))
                                 
-                                val existingRes = file.content.find { it.name == key }
-                                val value = existingRes?.value ?: ""
+                                val existingEntry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == key }
+                                val value = existingEntry?.value ?: ""
                                 
                                 OutlinedTextField(
                                     value = value,
                                     onValueChange = { newValue ->
                                         // Update logic
-                                        val newContent = file.content.toMutableList()
-                                        val resIndex = newContent.indexOfFirst { it.name == key }
+                                        val newNodes = file.nodes.toMutableList()
+                                        // We need to find the specific index of the NODE
+                                        val nodeIndex = newNodes.indexOfFirst { it is XmlNode.StringEntry && it.name == key }
                                         
-                                        if (resIndex != -1) {
+                                        if (nodeIndex != -1) {
                                             // Update existing
-                                            if (newValue.isEmpty()) { 
-                                                // Optional: remove if empty? Or keep empty string? user said "leave empty".
-                                                // If we keep it, it writes empty tag.
-                                                newContent[resIndex] = existingRes!!.copy(value = newValue)
-                                            } else {
-                                                newContent[resIndex] = existingRes!!.copy(value = newValue)
-                                            }
+                                            // Preserve the entry but update value
+                                            val oldEntry = newNodes[nodeIndex] as XmlNode.StringEntry
+                                            newNodes[nodeIndex] = oldEntry.copy(value = newValue)
                                         } else {
                                             // Create new
-                                            newContent.add(StringResource(key, newValue))
+                                            // Add whitespace for indentation if possible (simple heuristic: 4 spaces)
+                                            // And newline before
+                                            
+                                            // To make it look nice, we try to append before the last generic whitespace (usually closing tag indentation) 
+                                            // or just at end.
+                                            
+                                            // Simple append:
+                                            newNodes.add(XmlNode.Whitespace("\n    ")) // Indent
+                                            newNodes.add(XmlNode.StringEntry(key, newValue))
+                                            // We rely on the parser having a newline at end of file usually, or we add one step later?
+                                            // Ideally we find the last </resources> closing and insert before it?
+                                            // Our parser returns children of <resources>. So we just append to list.
+                                            // But we need a newline after the entry too probably?
+                                            // Let's just append Newline + Entry? 
+                                            // The list structure is: [Whitespace, Comment, Whitespace, String, Whitespace]
+                                            // If we append at end, it might be: [..., Whitespace(closing indent), String] which renders:
+                                            // ...
+                                            // </resources><string>...</string> -> Invalid if </resources> is implicit outside list.
+                                            // XmlUtils.saveXml constructs <resources> around the nodes. 
+                                            // So appending to list puts it inside <resources>.
+                                            // So [..., String] becomes <resources>...<string>...</string></resources>.
+                                            // We just strictly need proper indentation.
                                         }
                                         
                                         val newFiles = files.toMutableList()
-                                        newFiles[fileIndex] = file.copy(content = newContent)
+                                        newFiles[fileIndex] = file.copy(nodes = newNodes)
                                         files = newFiles.toList()
                                     },
                                     modifier = Modifier
