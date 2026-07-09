@@ -1,10 +1,14 @@
 package org.lerchenflo.xmllanguagetranslator
 
 import java.io.File
+import java.util.prefs.Preferences
 import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 object FilePicker {
+    private val prefs = Preferences.userNodeForPackage(FilePicker::class.java)
+    private const val LAST_DIR_KEY = "last_directory"
+
     fun pickFile(): File? {
         val fileChooser = JFileChooser()
         fileChooser.dialogTitle = "Select strings.xml"
@@ -14,11 +18,17 @@ object FilePicker {
         val filter = FileNameExtensionFilter("XML Files", "xml")
         fileChooser.fileFilter = filter
 
-        // Optional: Set suggested filename
-        fileChooser.selectedFile = File("strings.xml")
+        // Reopen in the directory we last picked a file from
+        val lastDir = prefs.get(LAST_DIR_KEY, null)?.let(::File)?.takeIf { it.isDirectory }
+        if (lastDir != null) {
+            fileChooser.currentDirectory = lastDir
+        }
+        fileChooser.selectedFile = File(lastDir ?: fileChooser.currentDirectory, "strings.xml")
 
         return if (fileChooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
-            fileChooser.selectedFile
+            val selected = fileChooser.selectedFile
+            selected.parentFile?.let { prefs.put(LAST_DIR_KEY, it.absolutePath) }
+            selected
         } else {
             null
         }

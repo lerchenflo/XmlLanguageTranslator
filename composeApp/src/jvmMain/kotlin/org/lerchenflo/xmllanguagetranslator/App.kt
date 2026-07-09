@@ -1,5 +1,7 @@
 package org.lerchenflo.xmllanguagetranslator
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -7,7 +9,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.FilterListOff
@@ -15,6 +19,8 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Comment
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,32 +31,86 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 import java.awt.Color
 import java.io.File
 
+private fun buildMasterNodes(files: List<ProjectFile>): List<XmlNode> {
+    if (files.isEmpty()) return emptyList()
+    val master = files[0].nodes.toMutableList()
+    val existingKeys = master.filterIsInstance<XmlNode.StringEntry>().map { it.name }.toSet()
+
+    // Find missing keys from other files
+    files.drop(1).forEach { file ->
+        file.nodes.filterIsInstance<XmlNode.StringEntry>().forEach { entry ->
+            if (entry.name !in existingKeys && master.none { it is XmlNode.StringEntry && it.name == entry.name }) {
+                // Append missing key
+                master.add(XmlNode.Whitespace("\n    "))
+                master.add(entry)
+            }
+        }
+    }
+    return master.toList()
+}
+
+private fun buildEmptyKeys(files: List<ProjectFile>, master: List<XmlNode>): Set<String> =
+    master.filterIsInstance<XmlNode.StringEntry>()
+        .filter { node ->
+            files.any { file ->
+                val entry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
+                val value = entry?.value
+                value == null || value.isEmpty()
+            }
+        }
+        .map { it.name }
+        .toSet()
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ButtonTooltip(text: String, content: @Composable () -> Unit) {
+    TooltipArea(
+        tooltip = {
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.inverseSurface,
+                tonalElevation = 4.dp
+            ) {
+                Text(
+                    text = text,
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        },
+        content = content
+    )
+}
+
+private fun matchesSearch(node: XmlNode, files: List<ProjectFile>, query: String): Boolean {
+    if (query.isBlank()) return true
+    return when (node) {
+        is XmlNode.StringEntry -> node.name.contains(query, ignoreCase = true) ||
+            files.any { file ->
+                file.nodes.filterIsInstance<XmlNode.StringEntry>()
+                    .find { it.name == node.name }
+                    ?.value?.contains(query, ignoreCase = true) == true
+            }
+        is XmlNode.Comment -> node.content.contains(query, ignoreCase = true)
+        else -> true
+    }
+}
+
 @Composable
 @Preview
 fun App() {
     MaterialTheme {
         var files by remember { mutableStateOf(listOf<ProjectFile>()) }
         var showOnlyEmpty by remember { mutableStateOf(false) }
+        // Keys considered "empty" at the moment the filter was (re-)applied. Kept frozen
+        // while the filter stays on, so a row doesn't vanish the instant you fill it in -
+        // it only drops out when you toggle the filter off and on again (or is deleted).
+        var frozenEmptyKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var searchQuery by remember { mutableStateOf("") }
 
         // Master Structure Logic
-        val masterNodes = remember(files) {
-            if (files.isEmpty()) emptyList<XmlNode>() else {
-                val master = files[0].nodes.toMutableList()
-                val existingKeys = master.filterIsInstance<XmlNode.StringEntry>().map { it.name }.toSet()
-                
-                // Find missing keys from other files
-                files.drop(1).forEach { file ->
-                    file.nodes.filterIsInstance<XmlNode.StringEntry>().forEach { entry ->
-                        if (entry.name !in existingKeys && master.none { it is XmlNode.StringEntry && it.name == entry.name }) {
-                            // Append missing key
-                            master.add(XmlNode.Whitespace("\n    "))
-                            master.add(entry)
-                        }
-                    }
-                }
-                master.toList()
-            }
-        }
+        val masterNodes = remember(files) { buildMasterNodes(files) }
 
         fun updateMasterNodes(newNodes: List<XmlNode>) {
              if (files.isNotEmpty()) {
@@ -60,28 +120,69 @@ fun App() {
              }
         }
 
+        fun computeEmptyKeys(): Set<String> = buildEmptyKeys(files, masterNodes)
+
         Column(modifier = Modifier.fillMaxSize()) {
             // Top Bar: Actions
             Row(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(onClick = {
-                    val file = FilePicker.pickFile()
-                    if (file != null) {
-                        files = files + ProjectFile(
-                            file = file,
-                            nodes = XmlUtils.parseXml(file)
-                        )
+                ButtonTooltip("Reload all files from disk (discards unsaved edits)") {
+                    IconButton(onClick = {
+                        val newFiles = files.map { it.copy(nodes = XmlUtils.parseXml(it.file)) }
+                        files = newFiles
+                        if (showOnlyEmpty) {
+                            // Re-sync the frozen filter snapshot against the freshly-reloaded
+                            // data, otherwise the visible rows stay pinned to the pre-reload set.
+                            frozenEmptyKeys = buildEmptyKeys(newFiles, buildMasterNodes(newFiles))
+                        }
+                    }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Reload from File")
                     }
-                }) {
-                    Icon(Icons.Default.Add, contentDescription = "Add File")
-                    Spacer(Modifier.width(8.dp))
-                    Text("Add File")
                 }
-                
+
+                Spacer(Modifier.width(8.dp))
+
+                ButtonTooltip("Add a language file to translate") {
+                    Button(onClick = {
+                        val file = FilePicker.pickFile()
+                        if (file != null) {
+                            files = files + ProjectFile(
+                                file = file,
+                                nodes = XmlUtils.parseXml(file)
+                            )
+                        }
+                    }) {
+                        Icon(Icons.Default.Add, contentDescription = "Add File")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add File")
+                    }
+                }
+
+                Spacer(Modifier.width(16.dp))
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.width(300.dp),
+                    singleLine = true,
+                    placeholder = { Text("Search keys & values") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            ButtonTooltip("Clear search") {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear Search")
+                                }
+                            }
+                        }
+                    }
+                )
+
                 Spacer(Modifier.weight(1f))
-                
+
+                ButtonTooltip("Sync structure across files and save all to disk") {
                 Button(onClick = {
                     if (files.isNotEmpty()) {
                         // 1. Capture the Master Structure (from File 0 / masterNodes)
@@ -101,8 +202,8 @@ fun App() {
                                             // Find existin value or missing
                                             val existing = file.nodes.filterIsInstance<XmlNode.StringEntry>()
                                                 .find { it.name == masterNode.name }
-                                            
-                                            // Keep existing value, or use empty/master value if it was missing 
+
+                                            // Keep existing value, or use empty/master value if it was missing
                                             // (Assuming we want to add the key if it's missing in this file)
                                             existing?.copy() ?: masterNode.copy(value = "")
                                         }
@@ -129,17 +230,27 @@ fun App() {
                     Spacer(Modifier.width(8.dp))
                     Text("Save All")
                 }
+                }
 
                 Spacer(Modifier.width(8.dp))
 
-                IconToggleButton(
-                    checked = showOnlyEmpty,
-                    onCheckedChange = { showOnlyEmpty = it }
+                ButtonTooltip(
+                    if (showOnlyEmpty) "Showing only untranslated entries - click to show all" else "Show only untranslated entries"
                 ) {
-                    Icon(
-                        if (showOnlyEmpty) Icons.Default.FilterList else Icons.Default.FilterListOff,
-                        contentDescription = "Filter Empty"
-                    )
+                    IconToggleButton(
+                        checked = showOnlyEmpty,
+                        onCheckedChange = { checked ->
+                            showOnlyEmpty = checked
+                            if (checked) {
+                                frozenEmptyKeys = computeEmptyKeys()
+                            }
+                        }
+                    ) {
+                        Icon(
+                            if (showOnlyEmpty) Icons.Default.FilterList else Icons.Default.FilterListOff,
+                            contentDescription = "Filter Empty"
+                        )
+                    }
                 }
             }
 
@@ -147,7 +258,7 @@ fun App() {
 
             // Grid Content
             val horizontalScrollState = rememberScrollState()
-            
+
             Column(modifier = Modifier.fillMaxSize()) {
                 // Header Row
                 Row(
@@ -195,29 +306,18 @@ fun App() {
                         }
                     }
                 }
-                
+
                 HorizontalDivider()
 
                 // Data Rows
-                 val filteredNodesSnapshot = remember(showOnlyEmpty) {
-                    if (showOnlyEmpty) {
-                         masterNodes.filter { node ->
-                             if (node is XmlNode.StringEntry) {
-                                  files.any { file ->
-                                    val entry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
-                                    val value = entry?.value
-                                    value == null || value.isEmpty()
-                                }
-                             } else {
-                                 false 
-                             }
-                        }
+                 val filteredNodesSnapshot = if (showOnlyEmpty) {
+                        masterNodes.filter { it is XmlNode.StringEntry && it.name in frozenEmptyKeys }
                     } else {
                         emptyList()
                     }
-                }
-                
-                val nodesDisplay = if (showOnlyEmpty) filteredNodesSnapshot else masterNodes.filter { it !is XmlNode.Whitespace }
+
+                val nodesDisplay = (if (showOnlyEmpty) filteredNodesSnapshot else masterNodes.filter { it !is XmlNode.Whitespace })
+                    .filter { matchesSearch(it, files, searchQuery) }
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     itemsIndexed(nodesDisplay) { index, node ->
@@ -238,6 +338,7 @@ fun App() {
 
                             // Reorder & Action Buttons
                             Row(modifier = Modifier.width(180.dp)) {
+                                ButtonTooltip("Move up") {
                                 IconButton(
                                     onClick = {
                                         val currentIdx = masterNodes.indexOf(node)
@@ -247,14 +348,14 @@ fun App() {
                                             while (targetIdx >= 0 && masterNodes[targetIdx] is XmlNode.Whitespace) {
                                                 targetIdx--
                                             }
-                                            
+
                                             if (targetIdx >= 0) {
                                                 // We found a non-whitespace node to swap with
                                                 // BUT we need to potentially carry surrounding whitespace with us?
-                                                // For simplicity, let's just swap the Node objects in the list 
+                                                // For simplicity, let's just swap the Node objects in the list
                                                 // and not worry about moving their indentation (as parser might have captured newline as separate whitespace)
                                                 // Swapping just the nodes is safer for visual reordering.
-                                                
+
                                                 val newNodes = masterNodes.toMutableList()
                                                 val prev = newNodes[targetIdx]
                                                 newNodes[targetIdx] = node
@@ -265,7 +366,9 @@ fun App() {
                                     },
                                     enabled = !showOnlyEmpty
                                 ) { Icon(Icons.Default.ArrowUpward, "Up", modifier = Modifier.size(16.dp)) }
-                                
+                                }
+
+                                ButtonTooltip("Move down") {
                                 IconButton(
                                     onClick = {
                                          val currentIdx = masterNodes.indexOf(node)
@@ -275,7 +378,7 @@ fun App() {
                                             while (targetIdx < masterNodes.size && masterNodes[targetIdx] is XmlNode.Whitespace) {
                                                 targetIdx++
                                             }
-                                            
+
                                             if (targetIdx < masterNodes.size) {
                                                 val newNodes = masterNodes.toMutableList()
                                                 val next = newNodes[targetIdx]
@@ -287,8 +390,10 @@ fun App() {
                                     },
                                     enabled = !showOnlyEmpty
                                 ) { Icon(Icons.Default.ArrowDownward, "Down", modifier = Modifier.size(16.dp)) }
+                                }
 
                                 // Add Comment Above
+                                ButtonTooltip("Insert comment above this row") {
                                 IconButton(
                                     onClick = {
                                         val currentIdx = masterNodes.indexOf(node)
@@ -302,20 +407,34 @@ fun App() {
                                         }
                                     },
                                     enabled = !showOnlyEmpty
-                                ) { Icon(Icons.Default.Comment, "Add Comment Above", modifier = Modifier.size(16.dp)) }
-                                
+                                ) { Icon(Icons.AutoMirrored.Filled.Comment, "Add Comment Above", modifier = Modifier.size(16.dp)) }
+                                }
+
                                 // Delete Action
+                                ButtonTooltip("Delete this row") {
                                 IconButton(
                                     onClick = {
-                                        val currentIdx = masterNodes.indexOf(node)
-                                        if (currentIdx != -1) {
-                                            val newNodes = masterNodes.toMutableList()
-                                            newNodes.removeAt(currentIdx)
-                                            updateMasterNodes(newNodes)
+                                        if (node is XmlNode.StringEntry) {
+                                            // Remove this key from every file, not just the master
+                                            // structure - otherwise it gets re-synced back into the
+                                            // master as a "missing key" from the other files.
+                                            files = files.map { file ->
+                                                file.copy(nodes = file.nodes.filterNot {
+                                                    it is XmlNode.StringEntry && it.name == node.name
+                                                })
+                                            }
+                                            frozenEmptyKeys = frozenEmptyKeys - node.name
+                                        } else {
+                                            val currentIdx = masterNodes.indexOf(node)
+                                            if (currentIdx != -1) {
+                                                val newNodes = masterNodes.toMutableList()
+                                                newNodes.removeAt(currentIdx)
+                                                updateMasterNodes(newNodes)
+                                            }
                                         }
-                                    },
-                                    enabled = !showOnlyEmpty
+                                    }
                                 ) { Icon(Icons.Default.Delete, "Delete", modifier = Modifier.size(16.dp)) }
+                                }
                             }
 
                             when (node) {
@@ -327,20 +446,20 @@ fun App() {
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
-                                    
+
                                      // Values per file
                                     files.forEachIndexed { fileIndex, file ->
                                         Spacer(Modifier.width(8.dp))
-                                        
+
                                         val existingEntry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
                                         val value = existingEntry?.value ?: ""
-                                        
+
                                         OutlinedTextField(
                                             value = value,
                                             onValueChange = { newValue ->
                                                 val newNodes = file.nodes.toMutableList()
                                                 val nodeIndex = newNodes.indexOfFirst { it is XmlNode.StringEntry && it.name == node.name }
-                                                
+
                                                 if (nodeIndex != -1) {
                                                     val oldEntry = newNodes[nodeIndex] as XmlNode.StringEntry
                                                     newNodes[nodeIndex] = oldEntry.copy(value = newValue)
@@ -348,7 +467,7 @@ fun App() {
                                                     newNodes.add(XmlNode.Whitespace("\n    "))
                                                     newNodes.add(XmlNode.StringEntry(node.name, newValue))
                                                 }
-                                                
+
                                                 val newFiles = files.toMutableList()
                                                 newFiles[fileIndex] = file.copy(nodes = newNodes)
                                                 files = newFiles.toList()
