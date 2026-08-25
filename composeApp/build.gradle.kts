@@ -35,15 +35,56 @@ kotlin {
 }
 
 
+// Add version info to desktop builds
+val desktopVersion = "1.0.0"
+
 compose.desktop {
     application {
         mainClass = "org.lerchenflo.xmllanguagetranslator.MainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "org.lerchenflo.xmllanguagetranslator"
-            packageVersion = "1.0.0"
+            packageVersion = desktopVersion
+            copyright = "© 2026"
+            vendor = "lerchenflo"
+            modules("jdk.unsupported")
+
+            linux {
+                shortcut = true
+                menuGroup = "Development"
+            }
+
+            windows {
+                perUserInstall = true
+
+                upgradeUuid = "b074e742-a5ba-4b0d-af60-db09ef6efe56"
+
+                menu = true
+                shortcut = true
+
+                // ./gradlew packageDistributionForCurrentOS
+            }
+
+            macOS {
+                // Pro-tip: set a bundleID without spaces here, otherwise macOS might try to
+                // generate one from a spaced packageName and fail.
+                bundleID = "org.lerchenflo.xmllanguagetranslator"
+            }
         }
+        buildTypes.release.proguard {
+            isEnabled.set(false) // disable ProGuard
+        }
+    }
+}
+
+tasks.withType<Jar> {
+    manifest {
+        attributes(
+            "Implementation-Title" to "XmlLanguageTranslator",
+            "Implementation-Version" to desktopVersion,
+            "Implementation-Vendor" to "lerchenflo"
+        )
     }
 }
 
