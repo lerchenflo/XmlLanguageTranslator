@@ -102,6 +102,18 @@ private fun matchesSearch(node: XmlNode, files: List<ProjectFile>, query: String
 fun App() {
     MaterialTheme {
         var files by remember { mutableStateOf(listOf<ProjectFile>()) }
+
+        // Reopen files from the previous session, then keep the persisted list in sync.
+        LaunchedEffect(Unit) {
+            val reopened = FilePicker.loadOpenFiles()
+            if (reopened.isNotEmpty()) {
+                files = reopened.map { file -> ProjectFile(file = file, nodes = XmlUtils.parseXml(file)) }
+            }
+        }
+        LaunchedEffect(files.map { it.file.absolutePath }) {
+            FilePicker.saveOpenFiles(files.map { it.file.absolutePath })
+        }
+
         var showOnlyEmpty by remember { mutableStateOf(false) }
         // Keys considered "empty" at the moment the filter was (re-)applied. Kept frozen
         // while the filter stays on, so a row doesn't vanish the instant you fill it in -

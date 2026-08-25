@@ -8,6 +8,21 @@ import javax.swing.filechooser.FileNameExtensionFilter
 object FilePicker {
     private val prefs = Preferences.userNodeForPackage(FilePicker::class.java)
     private const val LAST_DIR_KEY = "last_directory"
+    private const val OPEN_FILES_KEY = "open_files"
+    private const val OPEN_FILES_SEPARATOR = "\n"
+
+    fun saveOpenFiles(paths: List<String>) {
+        prefs.put(OPEN_FILES_KEY, paths.joinToString(OPEN_FILES_SEPARATOR))
+    }
+
+    fun loadOpenFiles(): List<File> {
+        val stored = prefs.get(OPEN_FILES_KEY, "")
+        if (stored.isEmpty()) return emptyList()
+        return stored.split(OPEN_FILES_SEPARATOR)
+            .filter { it.isNotBlank() }
+            .map(::File)
+            .filter { it.isFile }
+    }
 
     fun pickFile(): File? {
         val fileChooser = JFileChooser()

@@ -1,0 +1,109 @@
+name: Desktop DEB and RPM and Arch release
+
+on:
+  push:
+    tags:
+      - 'v*' # This workflow will ONLY run when you push a tag starting with 'v', like v1.0.0
+
+jobs:
+  build-linux-packages:
+    runs-on: ubuntu-latest
+
+    # REQUIRED: Gives the action permission to create a release in your repo
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      # Install the tools for BOTH formats
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot rpm
+
+      # Build the .deb file
+      - name: Build DEB
+        run: ./gradlew packageReleaseDeb
+
+      # Build the .rpm file
+      - name: Build RPM
+        run: ./gradlew packageReleaseRpm
+
+      # Build the Arch Linux package natively using a PKGBUILD inside Docker
+      - name: Build Arch (Native PKGBUILD)
+        run: |
+          # Create a working directory for the Arch build
+          mkdir -p arch-build
+
+          # Grab the DEB file we just built
+          DEB_FILE=$(ls composeApp/build/compose/binaries/main-release/deb/*.deb | head -n 1)
+          cp "$DEB_FILE" arch-build/app.deb
+
+          # Remove the 'v' from the tag, then replace hyphens with underscores
+          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${VERSION//-/_}
+
+          # Generate the PKGBUILD file
+          cat << EOF > arch-build/PKGBUILD
+          pkgname=xmllanguagetranslator
+          pkgver=$VERSION
+          pkgrel=1
+          pkgdesc="XmlLanguageTranslator Compose App"
+          arch=('x86_64')
+          depends=('alsa-lib' 'brotli' 'libbsd' 'bzip2' 'glibc' 'expat' 'libffi' 'fontconfig' 'freetype2' 'gcc-libs' 'libglvnd' 'libmd' 'libpng' 'wayland' 'libx11' 'libxau' 'libxcb' 'libxdmcp' 'libxext' 'libxi' 'libxrender' 'libxtst' 'xdg-utils' 'zlib')
+          source=("app.deb")
+          md5sums=('SKIP')
+
+          prepare() {
+              # Extract the outer DEB wrapper
+              bsdtar -xf app.deb
+          }
+
+          package() {
+              # Extract the actual app data directly into the Arch pacman folder structure
+              bsdtar -xf data.tar.* -C "\$pkgdir/"
+
+              # 1. Create standard Linux system directories
+              install -d "\$pkgdir/usr/bin"
+              install -d "\$pkgdir/usr/share/applications"
+              install -d "\$pkgdir/usr/share/pixmaps"
+
+              # 2. Symlink the executable to /usr/bin so it can be launched easily
+              ln -s "/opt/org.lerchenflo.xmllanguagetranslator/bin/org.lerchenflo.xmllanguagetranslator" "\$pkgdir/usr/bin/xmllanguagetranslator"
+
+              # 3. Move the .desktop file to the correct system location and rename it
+              # NOTE: verify this matches the actual filename produced by the DEB build
+              # (run `dpkg -c` on the artifact once, then adjust if it differs).
+              mv "\$pkgdir/opt/org.lerchenflo.xmllanguagetranslator/lib/"*.desktop "\$pkgdir/usr/share/applications/xmllanguagetranslator.desktop" 2>/dev/null || true
+
+              # 5. Fix the Exec path inside the .desktop file
+              sed -i 's|^Exec=.*|Exec=/usr/bin/xmllanguagetranslator|' "\$pkgdir/usr/share/applications/xmllanguagetranslator.desktop" 2>/dev/null || true
+          }
+          EOF
+
+          # Run makepkg inside an official Arch Linux Docker container
+          docker run --rm -v $(pwd)/arch-build:/build archlinux:base-devel \
+            bash -c "useradd -m builduser && chown -R builduser:builduser /build && su - builduser -c 'cd /build && makepkg -fd'"
+
+          # Move the resulting .pkg.tar.zst back to the Compose binaries folder
+          mkdir -p composeApp/build/compose/binaries/main-release/arch
+          cp arch-build/*.pkg.tar.zst composeApp/build/compose/binaries/main-release/arch/
+
+      # Upload all formats as artifacts
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: |
+            composeApp/build/compose/binaries/main-release/deb/*.deb
+            composeApp/build/compose/binaries/main-release/rpm/*.rpm
+            composeApp/build/compose/binaries/main-release/arch/*.pkg.tar.*
