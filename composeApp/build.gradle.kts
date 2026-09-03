@@ -51,7 +51,7 @@ compose.desktop {
             modules("jdk.unsupported")
 
             linux {
-                packageName = "schneaggchat-v3"
+                packageName = "xml-language-translator"
 
                 shortcut = true
                 menuGroup = "Development"
