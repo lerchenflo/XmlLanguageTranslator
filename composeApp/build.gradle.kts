@@ -36,7 +36,7 @@ kotlin {
 
 
 // Add version info to desktop builds
-val desktopVersion = "1.0.0"
+val desktopVersion = "1.0.1"
 
 compose.desktop {
     application {
@@ -44,13 +44,15 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
-            packageName = "org.lerchenflo.xmllanguagetranslator"
+            packageName = "XMLlanguagetranslator"
             packageVersion = desktopVersion
             copyright = "© 2026"
             vendor = "lerchenflo"
             modules("jdk.unsupported")
 
             linux {
+                packageName = "schneaggchat-v3"
+
                 shortcut = true
                 menuGroup = "Development"
             }

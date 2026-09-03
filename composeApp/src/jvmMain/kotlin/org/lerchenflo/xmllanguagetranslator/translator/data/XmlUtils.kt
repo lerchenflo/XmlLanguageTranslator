@@ -1,5 +1,6 @@
-package org.lerchenflo.xmllanguagetranslator
+package org.lerchenflo.xmllanguagetranslator.translator.data
 
+import org.lerchenflo.xmllanguagetranslator.translator.domain.XmlNode
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.File

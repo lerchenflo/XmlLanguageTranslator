@@ -1,7 +1,5 @@
-package org.lerchenflo.xmllanguagetranslator
+package org.lerchenflo.xmllanguagetranslator.translator.presentation
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,7 +16,7 @@ import androidx.compose.material.icons.filled.FilterListOff
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Comment
+import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -26,10 +24,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.ui.tooling.preview.Preview
-import java.awt.Color
-import java.io.File
+import org.lerchenflo.xmllanguagetranslator.sharedui.ButtonTooltip
+import org.lerchenflo.xmllanguagetranslator.translator.data.FilePicker
+import org.lerchenflo.xmllanguagetranslator.translator.data.WorkspaceStore
+import org.lerchenflo.xmllanguagetranslator.translator.data.XmlUtils
+import org.lerchenflo.xmllanguagetranslator.translator.data.parsed
+import org.lerchenflo.xmllanguagetranslator.translator.domain.ProjectFile
+import org.lerchenflo.xmllanguagetranslator.translator.domain.Workspace
+import org.lerchenflo.xmllanguagetranslator.translator.domain.XmlNode
 
 private fun buildMasterNodes(files: List<ProjectFile>): List<XmlNode> {
     if (files.isEmpty()) return emptyList()
@@ -61,28 +73,6 @@ private fun buildEmptyKeys(files: List<ProjectFile>, master: List<XmlNode>): Set
         .map { it.name }
         .toSet()
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ButtonTooltip(text: String, content: @Composable () -> Unit) {
-    TooltipArea(
-        tooltip = {
-            Surface(
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.inverseSurface,
-                tonalElevation = 4.dp
-            ) {
-                Text(
-                    text = text,
-                    color = MaterialTheme.colorScheme.inverseOnSurface,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
-        },
-        content = content
-    )
-}
-
 private fun matchesSearch(node: XmlNode, files: List<ProjectFile>, query: String): Boolean {
     if (query.isBlank()) return true
     return when (node) {
@@ -97,21 +87,84 @@ private fun matchesSearch(node: XmlNode, files: List<ProjectFile>, query: String
     }
 }
 
+// Removes the workspace at index, keeping at least one workspace open at all times -
+// closing the last remaining one resets it to a fresh empty "Workspace 1" instead.
+private fun closeWorkspace(
+    index: Int,
+    workspaces: List<Workspace>,
+    activeIndex: Int,
+    setWorkspaces: (List<Workspace>) -> Unit,
+    setActiveIndex: (Int) -> Unit
+) {
+    if (workspaces.size <= 1) {
+        setWorkspaces(listOf(Workspace(id = java.util.UUID.randomUUID().toString(), name = "Workspace 1", isLoaded = true)))
+        setActiveIndex(0)
+        return
+    }
+
+    val newWorkspaces = workspaces.filterIndexed { i, _ -> i != index }
+    setWorkspaces(newWorkspaces)
+
+    val newActiveIndex = when {
+        index < activeIndex -> activeIndex - 1
+        index == activeIndex -> (index - 1).coerceAtLeast(0)
+        else -> activeIndex
+    }
+    setActiveIndex(newActiveIndex.coerceIn(0, newWorkspaces.size - 1))
+}
+
+// Moves focus from a value field to the same file's field on the next (direction = 1) or
+// previous (direction = -1) visible entry row, so Tab/Shift+Tab walk down/up a column
+// instead of sideways across files. Silently does nothing if the target row isn't currently
+// composed (e.g. scrolled out of the LazyColumn's view) - its FocusRequester isn't attached yet.
+private fun focusAdjacentValueField(
+    nodesDisplay: List<XmlNode>,
+    currentDisplayIndex: Int,
+    fileIndex: Int,
+    direction: Int,
+    focusRequesters: MutableMap<Pair<Int, String>, FocusRequester>
+) {
+    val stringEntryIndices = nodesDisplay.indices.filter { nodesDisplay[it] is XmlNode.StringEntry }
+    val posInStringRows = stringEntryIndices.indexOf(currentDisplayIndex)
+    if (posInStringRows == -1) return
+
+    val targetDisplayIndex = stringEntryIndices.getOrNull(posInStringRows + direction) ?: return
+    val targetName = (nodesDisplay[targetDisplayIndex] as XmlNode.StringEntry).name
+    val requester = focusRequesters.getOrPut(fileIndex to targetName) { FocusRequester() }
+    runCatching { requester.requestFocus() }
+}
+
 @Composable
 @Preview
 fun App() {
     MaterialTheme {
-        var files by remember { mutableStateOf(listOf<ProjectFile>()) }
+        var workspaces by remember { mutableStateOf(listOf<Workspace>()) }
+        var activeIndex by remember { mutableIntStateOf(0) }
+        var showCreateDialog by remember { mutableStateOf(false) }
+        var renameTargetIndex by remember { mutableStateOf<Int?>(null) }
+        var closeConfirmIndex by remember { mutableStateOf<Int?>(null) }
+        var showClearConfirm by remember { mutableStateOf(false) }
 
-        // Reopen files from the previous session, then keep the persisted list in sync.
-        LaunchedEffect(Unit) {
-            val reopened = FilePicker.loadOpenFiles()
-            if (reopened.isNotEmpty()) {
-                files = reopened.map { file -> ProjectFile(file = file, nodes = XmlUtils.parseXml(file)) }
+        val files = workspaces.getOrNull(activeIndex)?.files ?: emptyList()
+
+        fun setFiles(newFiles: List<ProjectFile>) {
+            workspaces = workspaces.mapIndexed { i, ws ->
+                if (i == activeIndex) ws.copy(files = newFiles, isLoaded = true) else ws
             }
         }
-        LaunchedEffect(files.map { it.file.absolutePath }) {
-            FilePicker.saveOpenFiles(files.map { it.file.absolutePath })
+
+        // Reopen the previous session's workspaces (migrating the old single-file-list format
+        // if needed), then keep the persisted layout - names, files, descriptions - in sync.
+        LaunchedEffect(Unit) {
+            val (loaded, activeId) = WorkspaceStore.load()
+            val index = loaded.indexOfFirst { it.id == activeId }.coerceAtLeast(0)
+            workspaces = loaded.mapIndexed { i, ws -> if (i == index) ws.parsed() else ws }
+            activeIndex = index
+        }
+        LaunchedEffect(workspaces, activeIndex) {
+            if (workspaces.isNotEmpty()) {
+                WorkspaceStore.save(workspaces, workspaces.getOrNull(activeIndex)?.id)
+            }
         }
 
         var showOnlyEmpty by remember { mutableStateOf(false) }
@@ -128,13 +181,128 @@ fun App() {
              if (files.isNotEmpty()) {
                  val newFiles = files.toMutableList()
                  newFiles[0] = newFiles[0].copy(nodes = newNodes)
-                 files = newFiles.toList()
+                 setFiles(newFiles.toList())
              }
         }
 
         fun computeEmptyKeys(): Set<String> = buildEmptyKeys(files, masterNodes)
 
+        fun switchTo(index: Int) {
+            val target = workspaces.getOrNull(index) ?: return
+            if (!target.isLoaded) {
+                workspaces = workspaces.toMutableList().also { it[index] = target.parsed() }
+            }
+            activeIndex = index
+            if (showOnlyEmpty) {
+                val switchedFiles = workspaces[index].files
+                frozenEmptyKeys = buildEmptyKeys(switchedFiles, buildMasterNodes(switchedFiles))
+            }
+        }
+
+        // Value-field focus requesters, keyed by (file column, entry key) so Tab/Shift+Tab
+        // can jump straight to the same column's next/previous row.
+        val valueFieldFocusRequesters = remember { mutableMapOf<Pair<Int, String>, FocusRequester>() }
+
+        if (showCreateDialog) {
+            WorkspaceNameDialog(
+                title = "New workspace",
+                initialName = "",
+                onConfirm = { name ->
+                    val newWorkspace = Workspace(
+                        id = java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        isLoaded = true
+                    )
+                    workspaces = workspaces + newWorkspace
+                    activeIndex = workspaces.size - 1
+                    showCreateDialog = false
+                },
+                onDismiss = { showCreateDialog = false }
+            )
+        }
+
+        renameTargetIndex?.let { index ->
+            workspaces.getOrNull(index)?.let { workspace ->
+                WorkspaceNameDialog(
+                    title = "Rename workspace",
+                    initialName = workspace.name,
+                    onConfirm = { name ->
+                        workspaces = workspaces.mapIndexed { i, ws -> if (i == index) ws.copy(name = name) else ws }
+                        renameTargetIndex = null
+                    },
+                    onDismiss = { renameTargetIndex = null }
+                )
+            }
+        }
+
+        closeConfirmIndex?.let { index ->
+            workspaces.getOrNull(index)?.let { workspace ->
+                AlertDialog(
+                    onDismissRequest = { closeConfirmIndex = null },
+                    title = { Text("Close ${workspace.name}?") },
+                    text = { Text("Unsaved changes in this workspace will be lost.") },
+                    confirmButton = {
+                        ButtonTooltip("Close this workspace and discard its unsaved changes") {
+                            TextButton(onClick = {
+                                closeWorkspace(index, workspaces, activeIndex,
+                                    setWorkspaces = { workspaces = it },
+                                    setActiveIndex = { activeIndex = it })
+                                closeConfirmIndex = null
+                            }) { Text("Close") }
+                        }
+                    },
+                    dismissButton = {
+                        ButtonTooltip("Keep this workspace open") {
+                            TextButton(onClick = { closeConfirmIndex = null }) { Text("Cancel") }
+                        }
+                    }
+                )
+            }
+        }
+
+        if (showClearConfirm) {
+            AlertDialog(
+                onDismissRequest = { showClearConfirm = false },
+                title = { Text("Clear all files?") },
+                text = { Text("Unsaved changes in this workspace will be lost.") },
+                confirmButton = {
+                    ButtonTooltip("Remove all files from this workspace") {
+                        TextButton(onClick = {
+                            setFiles(emptyList())
+                            frozenEmptyKeys = emptySet()
+                            searchQuery = ""
+                            showClearConfirm = false
+                        }) { Text("Clear") }
+                    }
+                },
+                dismissButton = {
+                    ButtonTooltip("Keep the current files") {
+                        TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") }
+                    }
+                }
+            )
+        }
+
         Column(modifier = Modifier.fillMaxSize()) {
+            WorkspaceTabs(
+                workspaces = workspaces,
+                activeIndex = activeIndex,
+                onSelect = { index -> switchTo(index) },
+                onCreate = { showCreateDialog = true },
+                onClose = { index ->
+                    if (workspaces.getOrNull(index)?.files?.isNotEmpty() == true) {
+                        closeConfirmIndex = index
+                    } else {
+                        closeWorkspace(index, workspaces, activeIndex,
+                            setWorkspaces = { workspaces = it },
+                            setActiveIndex = { activeIndex = it })
+                    }
+                },
+                onRename = { index -> renameTargetIndex = index }
+            )
+
+            HorizontalDivider()
+
             // Top Bar: Actions
             Row(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -143,7 +311,7 @@ fun App() {
                 ButtonTooltip("Reload all files from disk (discards unsaved edits)") {
                     IconButton(onClick = {
                         val newFiles = files.map { it.copy(nodes = XmlUtils.parseXml(it.file)) }
-                        files = newFiles
+                        setFiles(newFiles)
                         if (showOnlyEmpty) {
                             // Re-sync the frozen filter snapshot against the freshly-reloaded
                             // data, otherwise the visible rows stay pinned to the pre-reload set.
@@ -160,10 +328,10 @@ fun App() {
                     Button(onClick = {
                         val file = FilePicker.pickFile()
                         if (file != null) {
-                            files = files + ProjectFile(
+                            setFiles(files + ProjectFile(
                                 file = file,
                                 nodes = XmlUtils.parseXml(file)
-                            )
+                            ))
                         }
                     }) {
                         Icon(Icons.Default.Add, contentDescription = "Add File")
@@ -230,7 +398,7 @@ fun App() {
                         }
 
                         // 3. Update State
-                        files = newFiles
+                        setFiles(newFiles)
 
                         // 4. Save to Disk
                         newFiles.forEach { projectFile ->
@@ -261,6 +429,21 @@ fun App() {
                         Icon(
                             if (showOnlyEmpty) Icons.Default.FilterList else Icons.Default.FilterListOff,
                             contentDescription = "Filter Empty"
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                ButtonTooltip("Remove all files from this workspace") {
+                    IconButton(
+                        onClick = { showClearConfirm = true },
+                        enabled = files.isNotEmpty()
+                    ) {
+                        Icon(
+                            Icons.Default.LayersClear,
+                            contentDescription = "Clear Workspace",
+                            tint = MaterialTheme.colorScheme.error
                         )
                     }
                 }
@@ -300,16 +483,37 @@ fun App() {
                     files.forEachIndexed { index, file ->
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.width(300.dp)) {
-                            Text(
-                                text = file.file.name,
-                                style = MaterialTheme.typography.titleSmall
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = file.file.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                ButtonTooltip("Remove this file from the project") {
+                                    IconButton(
+                                        onClick = {
+                                            val newFiles = files.filterIndexed { i, _ -> i != index }
+                                            setFiles(newFiles)
+                                            if (showOnlyEmpty) {
+                                                frozenEmptyKeys = buildEmptyKeys(newFiles, buildMasterNodes(newFiles))
+                                            }
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Remove File",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
                             OutlinedTextField(
                                 value = file.description,
                                 onValueChange = { newDesc ->
                                     val newFiles = files.toMutableList()
                                     newFiles[index] = file.copy(description = newDesc)
-                                    files = newFiles.toList()
+                                    setFiles(newFiles.toList())
                                 },
                                 label = { Text("Description") },
                                 singleLine = true,
@@ -430,11 +634,11 @@ fun App() {
                                             // Remove this key from every file, not just the master
                                             // structure - otherwise it gets re-synced back into the
                                             // master as a "missing key" from the other files.
-                                            files = files.map { file ->
+                                            setFiles(files.map { file ->
                                                 file.copy(nodes = file.nodes.filterNot {
                                                     it is XmlNode.StringEntry && it.name == node.name
                                                 })
-                                            }
+                                            })
                                             frozenEmptyKeys = frozenEmptyKeys - node.name
                                         } else {
                                             val currentIdx = masterNodes.indexOf(node)
@@ -465,6 +669,7 @@ fun App() {
 
                                         val existingEntry = file.nodes.filterIsInstance<XmlNode.StringEntry>().find { it.name == node.name }
                                         val value = existingEntry?.value ?: ""
+                                        val focusRequester = valueFieldFocusRequesters.getOrPut(fileIndex to node.name) { FocusRequester() }
 
                                         OutlinedTextField(
                                             value = value,
@@ -482,10 +687,20 @@ fun App() {
 
                                                 val newFiles = files.toMutableList()
                                                 newFiles[fileIndex] = file.copy(nodes = newNodes)
-                                                files = newFiles.toList()
+                                                setFiles(newFiles.toList())
                                             },
                                             modifier = Modifier
                                                 .width(300.dp)
+                                                .focusRequester(focusRequester)
+                                                .onPreviewKeyEvent { keyEvent ->
+                                                    if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Tab) {
+                                                        val direction = if (keyEvent.isShiftPressed) -1 else 1
+                                                        focusAdjacentValueField(nodesDisplay, index, fileIndex, direction, valueFieldFocusRequesters)
+                                                        true
+                                                    } else {
+                                                        false
+                                                    }
+                                                }
                                                 .background(
                                                      color = if (value.isEmpty()) androidx.compose.ui.graphics.Color.Yellow else androidx.compose.ui.graphics.Color.Transparent,
                                                 ),

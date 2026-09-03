@@ -1,4 +1,4 @@
-package org.lerchenflo.xmllanguagetranslator
+package org.lerchenflo.xmllanguagetranslator.translator.domain
 
 import java.io.File
 

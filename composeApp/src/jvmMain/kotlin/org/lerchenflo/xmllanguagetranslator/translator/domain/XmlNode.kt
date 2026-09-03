@@ -1,4 +1,4 @@
-package org.lerchenflo.xmllanguagetranslator
+package org.lerchenflo.xmllanguagetranslator.translator.domain
 
 sealed class XmlNode {
     data class StringEntry(val name: String, val value: String) : XmlNode()

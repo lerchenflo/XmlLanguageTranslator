@@ -1,4 +1,4 @@
-package org.lerchenflo.xmllanguagetranslator
+package org.lerchenflo.xmllanguagetranslator.translator.data
 
 import java.io.File
 import java.util.prefs.Preferences
@@ -6,15 +6,16 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 object FilePicker {
-    private val prefs = Preferences.userNodeForPackage(FilePicker::class.java)
+    // Fixed absolute path rather than Preferences.userNodeForPackage(FilePicker::class.java):
+    // that call derives the storage location from this class's Java package, which would silently
+    // orphan every user's already-saved preferences (open files, last directory) the moment this
+    // class moved from org.lerchenflo.xmllanguagetranslator into the translator/data package.
+    internal val prefs: Preferences = Preferences.userRoot().node("org/lerchenflo/xmllanguagetranslator")
     private const val LAST_DIR_KEY = "last_directory"
     private const val OPEN_FILES_KEY = "open_files"
     private const val OPEN_FILES_SEPARATOR = "\n"
 
-    fun saveOpenFiles(paths: List<String>) {
-        prefs.put(OPEN_FILES_KEY, paths.joinToString(OPEN_FILES_SEPARATOR))
-    }
-
+    // Kept only for one-time migration into WorkspaceStore's per-workspace layout.
     fun loadOpenFiles(): List<File> {
         val stored = prefs.get(OPEN_FILES_KEY, "")
         if (stored.isEmpty()) return emptyList()
