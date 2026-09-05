@@ -44,7 +44,7 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
-            packageName = "XMLlanguagetranslator"
+            packageName = "XML Language Translator"
             packageVersion = desktopVersion
             copyright = "© 2026"
             vendor = "lerchenflo"
