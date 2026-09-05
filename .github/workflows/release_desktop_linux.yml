@@ -53,11 +53,12 @@ jobs:
 
           # Generate the PKGBUILD file
           cat << EOF > arch-build/PKGBUILD
-          pkgname=xmllanguagetranslator
+          pkgname=xml-language-translator
           pkgver=$VERSION
           pkgrel=1
-          pkgdesc="XmlLanguageTranslator Compose App"
+          pkgdesc="XML Language Translator Compose App"
           arch=('x86_64')
+          options=(!debug !strip)
           depends=('alsa-lib' 'brotli' 'libbsd' 'bzip2' 'glibc' 'expat' 'libffi' 'fontconfig' 'freetype2' 'gcc-libs' 'libglvnd' 'libmd' 'libpng' 'wayland' 'libx11' 'libxau' 'libxcb' 'libxdmcp' 'libxext' 'libxi' 'libxrender' 'libxtst' 'xdg-utils' 'zlib')
           source=("app.deb")
           md5sums=('SKIP')
@@ -76,35 +77,18 @@ jobs:
               install -d "\$pkgdir/usr/share/applications"
               install -d "\$pkgdir/usr/share/pixmaps"
 
-              # 2. Find the app dir under /opt (name follows Compose's "linux { packageName }",
-              # do not hardcode it — it has drifted from the org.lerchenflo.* id before).
-              local appdir
-              appdir=\$(find "\$pkgdir/opt" -mindepth 1 -maxdepth 1 -type d)
+              # 2. Symlink the executable to /usr/bin so it can be launched easily
+              ln -s "/opt/xml-language-translator/bin/XML Language Translator" "\$pkgdir/usr/bin/xml-language-translator"
 
-              # 3. Symlink the executable to /usr/bin so it can be launched easily
-              local exe
-              exe=\$(find "\$appdir/bin" -mindepth 1 -maxdepth 1 -type f)
-              ln -s "\$exe" "\$pkgdir/usr/bin/xmllanguagetranslator"
+              # 3. Move the .desktop file to the correct system location and rename it
+              mv "\$pkgdir/opt/xml-language-translator/lib/xml-language-translator-XML_Language_Translator.desktop" "\$pkgdir/usr/share/applications/xml-language-translator.desktop"
 
-              # 4. Copy the .desktop file to the correct system location and rename it
-              local desktopfile
-              desktopfile=\$(find "\$appdir/lib" -maxdepth 1 -iname "*.desktop" | head -n1)
-              if [ -n "\$desktopfile" ]; then
-                  cp "\$desktopfile" "\$pkgdir/usr/share/applications/xmllanguagetranslator.desktop"
-                  sed -i \
-                      -e 's|^Exec=.*|Exec=/usr/bin/xmllanguagetranslator|' \
-                      -e 's|^Name=.*|Name=XML Language Translator|' \
-                      -e 's|^Comment=.*|Comment=XML Language Translator|' \
-                      "\$pkgdir/usr/share/applications/xmllanguagetranslator.desktop"
-              fi
+              # 4. Move the icon to the standard pixmaps folder
+              mv "\$pkgdir/opt/xml-language-translator/lib/XML_Language_Translator.png" "\$pkgdir/usr/share/pixmaps/xml-language-translator.png"
 
-              # 5. Copy the icon to pixmaps and point the .desktop file at it
-              local iconfile
-              iconfile=\$(find "\$appdir/lib" -maxdepth 1 -iname "*.png" | head -n1)
-              if [ -n "\$iconfile" ] && [ -n "\$desktopfile" ]; then
-                  cp "\$iconfile" "\$pkgdir/usr/share/pixmaps/xmllanguagetranslator.png"
-                  sed -i 's|^Icon=.*|Icon=xmllanguagetranslator|' "\$pkgdir/usr/share/applications/xmllanguagetranslator.desktop"
-              fi
+              # 5. Fix the paths inside the .desktop file using sed
+              sed -i 's|^Exec=.*|Exec=/usr/bin/xml-language-translator|' "\$pkgdir/usr/share/applications/xml-language-translator.desktop"
+              sed -i 's|^Icon=.*|Icon=xml-language-translator|' "\$pkgdir/usr/share/applications/xml-language-translator.desktop"
           }
           EOF
 

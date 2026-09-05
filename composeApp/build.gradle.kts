@@ -36,7 +36,7 @@ kotlin {
 
 
 // Add version info to desktop builds
-val desktopVersion = "1.0.1"
+val desktopVersion = "1.0.3"
 
 compose.desktop {
     application {
@@ -51,6 +51,7 @@ compose.desktop {
             modules("jdk.unsupported")
 
             linux {
+                // Linux override. Keep this strictly lowercase with no spaces.
                 packageName = "xml-language-translator"
 
                 shortcut = true
