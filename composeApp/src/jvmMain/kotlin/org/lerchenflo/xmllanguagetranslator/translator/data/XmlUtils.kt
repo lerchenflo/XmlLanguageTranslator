@@ -53,6 +53,20 @@ object XmlUtils {
         return nodes
     }
 
+    // Untranslated entries are dropped on save so a file never gets <string name="x"></string>
+    // placeholders written into it - the key survives in the files that do have a value for it.
+    private fun List<XmlNode>.withoutEmptyStringEntries(): List<XmlNode> {
+        val kept = mutableListOf<XmlNode>()
+        for (node in this) {
+            if (node is XmlNode.StringEntry && node.value.isEmpty()) {
+                if (kept.lastOrNull() is XmlNode.Whitespace) kept.removeAt(kept.lastIndex)
+                continue
+            }
+            kept.add(node)
+        }
+        return kept
+    }
+
     fun saveXml(file: File, nodes: List<XmlNode>) {
         try {
             val dbFactory = DocumentBuilderFactory.newInstance()
@@ -63,7 +77,7 @@ object XmlUtils {
             val rootElement = doc.createElement("resources")
             doc.appendChild(rootElement)
 
-            for (node in nodes) {
+            for (node in nodes.withoutEmptyStringEntries()) {
                 when (node) {
                     is XmlNode.StringEntry -> {
                         val stringElement = doc.createElement("string")

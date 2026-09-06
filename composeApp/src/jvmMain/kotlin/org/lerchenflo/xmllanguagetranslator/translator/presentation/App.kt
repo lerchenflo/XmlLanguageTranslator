@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LayersClear
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -144,6 +145,7 @@ fun App() {
         var renameTargetIndex by remember { mutableStateOf<Int?>(null) }
         var closeConfirmIndex by remember { mutableStateOf<Int?>(null) }
         var showClearConfirm by remember { mutableStateOf(false) }
+        var showWorkspaceMenu by remember { mutableStateOf(false) }
 
         val files = workspaces.getOrNull(activeIndex)?.files ?: emptyList()
 
@@ -240,7 +242,12 @@ fun App() {
                 AlertDialog(
                     onDismissRequest = { closeConfirmIndex = null },
                     title = { Text("Close ${workspace.name}?") },
-                    text = { Text("Unsaved changes in this workspace will be lost.") },
+                    text = {
+                        Text(
+                            if (workspace.files.isEmpty()) "This workspace will be closed."
+                            else "Unsaved changes in this workspace will be lost."
+                        )
+                    },
                     confirmButton = {
                         ButtonTooltip("Close this workspace and discard its unsaved changes") {
                             TextButton(onClick = {
@@ -289,15 +296,7 @@ fun App() {
                 activeIndex = activeIndex,
                 onSelect = { index -> switchTo(index) },
                 onCreate = { showCreateDialog = true },
-                onClose = { index ->
-                    if (workspaces.getOrNull(index)?.files?.isNotEmpty() == true) {
-                        closeConfirmIndex = index
-                    } else {
-                        closeWorkspace(index, workspaces, activeIndex,
-                            setWorkspaces = { workspaces = it },
-                            setActiveIndex = { activeIndex = it })
-                    }
-                },
+                onClose = { index -> closeConfirmIndex = index },
                 onRename = { index -> renameTargetIndex = index }
             )
 
@@ -435,15 +434,30 @@ fun App() {
 
                 Spacer(Modifier.width(8.dp))
 
-                ButtonTooltip("Remove all files from this workspace") {
-                    IconButton(
-                        onClick = { showClearConfirm = true },
-                        enabled = files.isNotEmpty()
+                Box {
+                    ButtonTooltip("More workspace actions") {
+                        IconButton(onClick = { showWorkspaceMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More Actions")
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = showWorkspaceMenu,
+                        onDismissRequest = { showWorkspaceMenu = false }
                     ) {
-                        Icon(
-                            Icons.Default.LayersClear,
-                            contentDescription = "Clear Workspace",
-                            tint = MaterialTheme.colorScheme.error
+                        DropdownMenuItem(
+                            text = { Text("Remove all files from workspace") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.LayersClear,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            enabled = files.isNotEmpty(),
+                            onClick = {
+                                showWorkspaceMenu = false
+                                showClearConfirm = true
+                            }
                         )
                     }
                 }
